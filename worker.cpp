@@ -30,11 +30,6 @@ static atomic<bool> g_running{true};
 // Circuit Breaker
 static CircuitBreaker g_cb("WorkerInternalCB", 3, 10.0);
 
-// ==========================================================================================
-// CAMBIO 1: SE ELIMINÓ LA VARIABLE GLOBAL 'LOCAL_EXTRACTED_TEXT'
-// Ya no guardamos gigabytes de texto en memoria RAM para evitar congelamientos en pruebas masivas.
-// ==========================================================================================
-
 // Cierre controlado del servidor al presionar Ctrl+C
 void signalHandler(int signum) {
     cout << "\n[" << WORKER_ID << "] Apagando servidor de red de forma segura...\n";
@@ -42,8 +37,7 @@ void signalHandler(int signum) {
 }
 
 // ==========================================================================================
-// CAMBIO 2: FUNCIÓN DE CONTEO OPTIMIZADA CON STREAMING (APERTURA DINÁMICA POR CHUNKS)
-// En vez de usar .substr() sobre la RAM, lee directamente del disco duro por bloques de 1 MB.
+// FUNCIÓN DE CONTEO OPTIMIZADA CON STREAMING BINARIO SEGURO
 // ==========================================================================================
 map<string, int> processTextRange(long start, long end) {
     map<string, int> mapaFrecuencias;
@@ -66,17 +60,22 @@ map<string, int> processTextRange(long start, long end) {
     long bytesPorProcesar = end - start;
     const size_t TAMANO_CHUNK = 1024 * 1024; // Bloques de 1 MB en RAM a la vez
     vector<char> bufferChunk(TAMANO_CHUNK);
-    string fragmentoAcumulado = "";
+    string residuoAnterior = "";
 
-    // Leemos el segmento asignado por pedazos
-    while (bytesPorProcesar > 0 && file) {
+    // Leemos el segmento asignado por pedazos controlando que el stream esté sano
+    while (bytesPorProcesar > 0 && file.good()) {
         size_t bytesALeer = min((long)TAMANO_CHUNK, bytesPorProcesar);
+        
+        // CORRECCIÓN PROTECTORA: Limpiamos por completo el buffer antes de rellenarlo
+        // Esto evita que queden caracteres residuales de iteraciones previas de 1MB.
+        fill(bufferChunk.begin(), bufferChunk.end(), 0);
+
         file.read(bufferChunk.data(), bytesALeer);
         size_t bytesLeidos = file.gcount();
         if (bytesLeidos == 0) break;
 
-        // Añadir el bloque leído al string de procesamiento temporal
-        fragmentoAcumulado.append(bufferChunk.data(), bytesLeidos);
+        // Concatenamos el residuo del bloque anterior con el nuevo bloque leído
+        string fragmentoAcumulado = residuoAnterior + string(bufferChunk.data(), bytesLeidos);
         bytesPorProcesar -= bytesLeidos;
 
         // Limpieza de caracteres extraños y conversión a minúsculas
@@ -101,8 +100,8 @@ map<string, int> processTextRange(long start, long end) {
             }
         }
 
-        // Manejo de fronteras: si el bloque de 1 MB corta una palabra a la mitad,
-        // revertimos su conteo y la dejamos acumulada para que se complete con el siguiente bloque.
+        // Manejo de fronteras: si el bloque corta una palabra a la mitad,
+        // revertimos su conteo y la dejamos acumulada para el siguiente bloque.
         if (!fragmentoAcumulado.empty() && fragmentoAcumulado.back() != ' ') {
             if (!ultimaPalabraIncompleta.empty() && mapaFrecuencias[ultimaPalabraIncompleta] > 0) {
                 mapaFrecuencias[ultimaPalabraIncompleta]--; 
@@ -110,10 +109,16 @@ map<string, int> processTextRange(long start, long end) {
                     mapaFrecuencias.erase(ultimaPalabraIncompleta);
                 }
             }
-            fragmentoAcumulado = ultimaPalabraIncompleta;
+            residuoAnterior = ultimaPalabraIncompleta;
         } else {
-            fragmentoAcumulado = "";
+            residuoAnterior = "";
         }
+    }
+
+    // Si al terminar el rango asignado nos quedó un residuo huérfano sin procesar, 
+    // lo contamos directamente para no perder caracteres en los límites divisores del Coordinador.
+    if (!residuoAnterior.empty() && residuoAnterior.size() > 3) {
+        mapaFrecuencias[residuoAnterior]++;
     }
 
     file.close();
@@ -122,32 +127,26 @@ map<string, int> processTextRange(long start, long end) {
 
 // Procesa la petición cruda del socket, aplica el Circuit Breaker y devuelve un JSON string
 string handleNetworkRequest(const string& rawBody, int& statusCode) {
-    // El Circuit Breaker decide si el Worker está sano o colapsado
     if (!g_cb.allowRequest()) {
         statusCode = 503; 
         return "{\"error\":\"Circuit Breaker ABIERTO. Nodo temporalmente fuera de servicio\"}";
     }
     try {
-        // LEER LA TAREA EN JSON desde el socket
         json tareaJson = json::parse(rawBody);
         long start = tareaJson["start"].get<long>();
         long end = tareaJson["end"].get<long>();
         cout << "[" << WORKER_ID << "] Procesando rango de bytes: [" << start << " - " << end << "]\n";
         
-        // EJECUTAR EL TRABAJO REAL Y MEDIR TIEMPO
         auto startClock = chrono::steady_clock::now();
         map<string, int> resultadoMapa = processTextRange(start, end);
         auto endClock = chrono::steady_clock::now();
         double workerElapsedMs = chrono::duration<double, milli>(endClock - startClock).count();
         
-        // Imprimir en la consola del Worker cuánto tardó él individualmente
         cout << " [" << WORKER_ID << "] Procesamiento local completado en: " << workerElapsedMs << " ms.\n";
         
-        // NOTIFICAR ÉXITO AL CIRCUIT BREAKER
         g_cb.recordSuccess();
         statusCode = 200;
         
-        // CONVERTIR EL MAPA A JSON
         json respuestaJson = resultadoMapa;
         return respuestaJson.dump();
     } catch (const exception& e) {
@@ -159,7 +158,6 @@ string handleNetworkRequest(const string& rawBody, int& statusCode) {
 }
 
 int main(int argc, char* argv[]) {
-    // Leer los argumentos pasados por consola
     for (int i = 1; i < argc; ++i) {
         string arg = argv[i];
         if (arg == "--id" && i + 1 < argc) WORKER_ID = argv[++i];
@@ -172,11 +170,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // ==========================================================================================
-    // CAMBIO 3: ELIMINACIÓN DE CARGA TOTAL EN MEMORIA RAM
-    // Ya no llamamos a extractText(). Solo verificamos la existencia física del archivo.
-    // ==========================================================================================
-    ifstream testFile(LOCAL_FILE_PATH);
+    ifstream testFile(LOCAL_FILE_PATH, ios::binary);
     if (!testFile.good()) {
         cerr << "Error critico: El archivo asignado no existe o no se puede leer: " << LOCAL_FILE_PATH << "\n";
         return 1;
@@ -184,7 +178,6 @@ int main(int argc, char* argv[]) {
     testFile.close();
     cout << "[" << WORKER_ID << "] Modo Streaming listo. Archivo vinculado de forma segura.\n";
 
-    // 1. INICIALIZAR WINSOCK
     WSADATA wsaData;
     if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
         cerr << "Error al inicializar Winsock.\n";
@@ -193,7 +186,6 @@ int main(int argc, char* argv[]) {
     
     signal(SIGINT, signalHandler);
     
-    // 2. CREAR EL SOCKET DEL SERVIDOR
     SOCKET servidor_fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (servidor_fd == INVALID_SOCKET) {
         cerr << "Error al crear el socket del servidor.\n";
@@ -201,11 +193,9 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     
-    // Hacer que el socket NO SEA BLOQUEANTE para que respete a g_running
     u_long modo = 1;
     ioctlsocket(servidor_fd, FIONBIO, &modo);
     
-    // 3. CONFIGURAR DIRECCIÓN Y PUERTO
     sockaddr_in direccion;
     direccion.sin_family = AF_INET;
     direccion.sin_addr.s_addr = INADDR_ANY; 
@@ -218,7 +208,6 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     
-    // 4. ESCUCHAR CONEXIONES
     if (listen(servidor_fd, SOMAXCONN) == SOCKET_ERROR) {
         cerr << "Error en el listen.\n";
         closesocket(servidor_fd);
@@ -229,21 +218,15 @@ int main(int argc, char* argv[]) {
     cout << "[" << WORKER_ID << "] Servidor Worker inicializado con exito (Sockets Nativos).\n";
     cout << "[" << WORKER_ID << "] Escuchando peticiones crudas en el puerto " << PORT << "...\n";
     
-    // 5. BUCLE ACTIVO BASADO EN TU ATOMIC (g_running)
     while (g_running.load()) {
         sockaddr_in dir_cliente;
         int tamano_dir = sizeof(dir_cliente);        
         
         SOCKET nuevo_socket = accept(servidor_fd, (struct sockaddr*)&dir_cliente, &tamano_dir);
         if (nuevo_socket != INVALID_SOCKET) {
-            // Volver el socket del cliente bloqueante temporalmente para leer/escribir seguro
             u_long modo_cliente = 0;
             ioctlsocket(nuevo_socket, FIONBIO, &modo_cliente);
             
-            // ==================================================================================
-            // CAMBIO 4: BUFFER DE RECEPCIÓN EXPANDIDO (64 KB)
-            // Evita cortes de flujo cuando el Coordinador envía parámetros en redes congestionadas.
-            // ==================================================================================
             char buffer[65536] = {0};
             int bytesRecibidos = recv(nuevo_socket, buffer, sizeof(buffer) - 1, 0);
             
@@ -252,16 +235,13 @@ int main(int argc, char* argv[]) {
                 int statusCode = 200;
                 
                 string jsonRespuesta = handleNetworkRequest(peticionStr, statusCode);
-                
-                // Enviar la respuesta directa al Coordinador a través del socket
                 send(nuevo_socket, jsonRespuesta.c_str(), jsonRespuesta.size(), 0);
             }
             closesocket(nuevo_socket);
         }
-        this_thread::sleep_for(chrono::milliseconds(100)); //
+        this_thread::sleep_for(chrono::milliseconds(100)); 
     }
     
-    // 6. LIMPIEZA NATIVA
     closesocket(servidor_fd);
     WSACleanup();
     cout << "[" << WORKER_ID << "] Nodo desconectado limpiamente de la red.\n";

@@ -21,11 +21,11 @@ struct WorkerConfig {
 };
 
 struct DispatchResult {
-    bool        success = false;  // Indica si la operación por red fue exitosa
+    bool         success = false;  // Indica si la operación por red fue exitosa
     std::string workerId;         // Qué máquina respondió
-    long        totalWords = 0;   // El entero directo con la suma de palabras del fragmento
-    double      elapsedMs = 0.0;  // Cuánto tardó la llamada de red en milisegundos
-    int         attempts  = 0;    // Cuántas veces se intentó reconectar antes de tirar la toalla
+    long         totalWords = 0;   // El entero directo con la suma de palabras del fragmento
+    double       elapsedMs = 0.0;  // Cuánto tardó la llamada de red en milisegundos
+    int          attempts  = 0;    // Cuántas veces se intentó reconectar antes de tirar la toalla
     std::string rawBody;          // Almacenamiento crudo de la respuesta JSON por seguridad
 };
 
@@ -61,10 +61,7 @@ public:
                     throw std::runtime_error("No se pudo crear el socket TCP");
                 }
 
-                // ==================================================================================
-                // CAMBIO OPTIMIZADO: ASIGNAR TIMEOUTS NATIVOS DIRECTO AL SOCKET DE WINDOWS (SO_RCVTIMEO)
-                // Esto evita que 'recv' se quede colgado indefinidamente si la red se congela.
-                // ==================================================================================
+                // Asignar timeouts nativos estables en Windows
                 int timeoutConfig = timeoutMs_; 
                 setsockopt(socket_fd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeoutConfig, sizeof(timeoutConfig));
                 setsockopt(socket_fd, SOL_SOCKET, SO_SNDTIMEO, (const char*)&timeoutConfig, sizeof(timeoutConfig));
@@ -86,53 +83,65 @@ public:
                     throw std::runtime_error("Error enviando datos al socket de destino");
                 }
 
-                // ==================================================================================
-                // CAMBIO CRÍTICO: BUCLE DE RECEPCIÓN ADAPTADO PARA TEXTOS JSON GIGANTES (STREAMING DE Sockets)
-                // Reserva memoria de golpe de forma inteligente para no corromper strings pesados en RAM
-                // ==================================================================================
+                // 5. Bucle de lectura por ráfagas protegido
                 std::string respuestaCompleta = "";
                 char buffer[65536]; // Buffer de lectura de 64 KB
                 
                 while (true) {
+                    // Limpieza preventiva de seguridad del buffer receptor
+                    std::fill(std::begin(buffer), std::end(buffer), 0);
+                    
                     int bytesLeidos = recv(socket_fd, buffer, sizeof(buffer) - 1, 0);
                     
                     if (bytesLeidos > 0) {
                         respuestaCompleta.append(buffer, bytesLeidos);
+                        
+                        // CORRECCIÓN INTERMEDIA: Si el buffer termina en '}', verificamos si el JSON ya cerró completamente.
+                        // Esto evita quedarnos colgados en la red esperando un fin de flujo de un socket que ya se va a cerrar.
+                        if (!respuestaCompleta.empty() && respuestaCompleta.back() == '}') {
+                            if (json::accept(respuestaCompleta)) {
+                                break; 
+                            }
+                        }
                     } else if (bytesLeidos == 0) {
-                        // El Worker terminó con éxito de enviar toda la información por el flujo TCP
+                        // El flujo finalizó de forma correcta por el cierre estándar del socket
                         break; 
                     } else {
-                        // Si ocurre un código de error nativo por red lenta de Windows, le damos tolerancia
                         int errorNativo = WSAGetLastError();
+                        
                         if (errorNativo == WSAEWOULDBLOCK || errorNativo == WSAEINPROGRESS) {
-                            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                            std::this_thread::sleep_for(std::chrono::milliseconds(20));
                             continue;
                         }
-                        throw std::runtime_error("Desconexion abrupta del socket durante la transferencia masiva");
+                        // Si da error de reset pero el JSON ya está completo en el string, lo aceptamos como válido
+                        if (errorNativo == WSAECONNRESET && !respuestaCompleta.empty()) {
+                            if (json::accept(respuestaCompleta)) {
+                                break;
+                            }
+                        }
+                        throw std::runtime_error("Desconexion abrupta del socket durante la transferencia masiva (Error: " + std::to_string(errorNativo) + ")");
                     }
                 }
 
-                // Verificar si recibimos una respuesta vacía
                 if (respuestaCompleta.empty()) {
                     throw std::runtime_error("El Worker respondio un flujo de datos vacio");
                 }
 
                 res.rawBody = respuestaCompleta;
-                res.success = true;
-
-                // Parsear el JSON para rellenar de forma segura el conteo bruto de palabras
+                
+                // Parsear el diccionario recibido para acumular el volumen total de palabras distribuidas
                 json parsed = json::parse(respuestaCompleta);
                 res.totalWords = 0;
                 for (auto it = parsed.begin(); it != parsed.end(); ++it) {
                     res.totalWords += it.value().get<long>();
                 }
 
-                // Detener cronómetro de red exitoso
+                res.success = true;
                 auto end = std::chrono::steady_clock::now();
                 res.elapsedMs = std::chrono::duration<double, std::milli>(end - start).count();
                 
                 closesocket(socket_fd);
-                return res; // Éxito completo, salimos de los reintentos
+                return res; // Éxito total, salimos del bucle de intentos
 
             } catch (const std::exception& e) {
                 lastError = e.what();
@@ -141,13 +150,11 @@ public:
                 }
             }
 
-            // Pequeña espera estratégica si la red parpadeó antes de intentar el siguiente reintento
             if (attempt < maxRetries_) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(300));
             }
         }
 
-        // Si el flujo llega aquí, significa que falló de forma permanente tras los reintentos
         auto end = std::chrono::steady_clock::now();
         res.elapsedMs = std::chrono::duration<double, std::milli>(end - start).count();
         res.success = false;
