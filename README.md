@@ -11,6 +11,7 @@
 - [Compilación](#compilación)
 - [Uso](#uso)
 - [Arquitectura](#arquitectura)
+- [Redirección de rango cuando worker falla](#redirección-de-rango-cuando-worker-falla)
 - [Solución de problemas](#solución-de-problemas)
 
 ---
@@ -182,14 +183,14 @@ El Coordinador:
 ## 5️⃣ Arquitectura
 
 ```
-┌──────────────────┐     ┌──────────────────┐     ┌────────────────────┐
+┌──────────────────┐     ┌──────────────────┐     ┌────────────────────┐[...]
 │ coordinator.exe  │────▶│ emsamblador.hpp  │────▶│circuit_breaker.hpp │
 │(coordinador.cpp) │     │  (Ambassador)    │     │  (por worker)      │
-└──────────────────┘     └──────────────────┘     └────────────────────┘
+└──────────────────┘     └──────────────────┘     └────────────────────┘[...]
        │                                                       ▼
        │                                             ┌─────────────────┐
        │                                             │  worker.exe (x5)│
-       │                                             └─────────────────┘
+       │                                             ��─────────────────┘
        │                                                       ▲
        └──────────── JSON sobre TCP (Winsock2) ────────────┘
 ```
@@ -218,13 +219,183 @@ coordinator.exe
   CLOSED ──(3 fallos)──▶ OPEN ──(10 seg)──▶ HALF_OPEN
     ▲                                            │
     └──────────────── éxito ──────────────────┘
-                              fallo → OPEN
+                               fallo → OPEN
 ```
 
 **Significado de estados:**
 - **CLOSED**: Sistema normal, procesa todas las solicitudes
 - **OPEN**: Se detectaron 3 fallos, rechaza solicitudes inmediatamente
 - **HALF_OPEN**: Después de 10 segundos, permite 1 solicitud de prueba
+
+---
+
+## 6️⃣ Redirección de rango cuando worker falla
+
+### ¿Qué sucede cuando un worker se detiene?
+
+Cuando un **worker falla** o se desconecta, el **Circuit Breaker** lo detecta y el **Coordinador** debe reasignar el rango de datos que ese worker estaba procesando a otros workers disponibles.
+
+### Procedimiento para provocar fallo y reasignar rango
+
+#### **Paso 1: Sistema normal en ejecución**
+
+Todas las terminales están activas:
+- **Terminales 1-5**: 5 workers corriendo normalmente
+- **Terminal 6**: Coordinador procesando
+
+#### **Paso 2: Simular fallo controlado del worker**
+
+Para que un worker **termine pero permita reintentos** (primera pausa):
+
+```cmd
+Presiona: Ctrl + C (UNA VEZ)
+```
+
+**¿Qué sucede?**
+- El worker recibe la señal SIGINT
+- Finaliza su proceso actual de manera ordenada
+- **Sigue procesando hasta terminar el fragmento actual**
+- El socket se mantiene abierto momentáneamente
+
+**Estado del sistema:**
+- ✅ El worker intenta terminar correctamente
+- ✅ El Coordinador aún puede intentar reconectar
+- ⚠️ El Circuit Breaker pasa a estado **OPEN** tras 3 fallos
+
+#### **Paso 3: Forzar desconexión y reasignación (segunda pausa)**
+
+Para que el worker se **desconecte completamente** y se dispare la reasignación:
+
+```cmd
+Presiona: Ctrl + C (DOS VECES - rápidamente)
+```
+
+**¿Qué sucede?**
+- Primera `Ctrl + C`: Iniciada la terminación ordenada
+- Segunda `Ctrl + C`: **Termina el worker inmediatamente sin esperar**
+- El socket TCP se cierra abruptamente
+- Se detiene todo procesamiento en ese worker
+
+**Estado del sistema:**
+- 🔴 El worker está **COMPLETAMENTE OFFLINE**
+- ⚠️ Circuit Breaker en estado **OPEN**
+- 🔄 **El Coordinador detecta la caída**
+- ✅ **Reasigna automáticamente el rango de datos** a los workers restantes
+
+### Flujo de reasignación de rango
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Coordinador envía fragmento a worker_3                     │
+│  (bytes 0-20000)                                            │
+└─────────────────────────────────────────────────────────────┘
+                           │
+                           ▼
+                   ┌──────────────────┐
+                   │  worker_3.exe    │
+                   │  Procesando... ◯ │
+                   └──────────────────┘
+                           │
+                 ┌─────────┴──────────┐
+                 │ Usuario presiona  │
+                 │ Ctrl+C DOS VECES  │
+                 └─────────┬──────────┘
+                           ▼
+            ┌──────────────────────────────────┐
+            │ worker_3 TERMINA ABRUPTAMENTE    │
+            │ Socket se cierra                 │
+            └──────────────────────────────────┘
+                           │
+            ┌──────────────▼──────────────────┐
+            │ Coordinador detecta:            │
+            │ ✘ connect() failed              │
+            │ ✘ Circuit Breaker → OPEN       │
+            └──────────────┬──────────────────┘
+                           │
+            ┌──────────────▼──────────────────┐
+            │ REASIGNACIÓN AUTOMÁTICA:        │
+            │ • Rango 0-20000 → worker_1     │
+            │ • Rango 20001-40000 → worker_2 │
+            │ • Rango 40001-60000 → worker_4 │
+            │ • Rango 60001-80000 → worker_5 │
+            └──────────────────────────────────┘
+                           │
+            ┌──────────────▼──────────────────┐
+            │ Procesamiento continúa con 4   │
+            │ workers disponibles             │
+            └──────────────────────────────────┘
+```
+
+### Ejemplo práctico: Paso a paso
+
+**Escenario: Ejecutar el sistema completo**
+
+```cmd
+REM Terminal 1: worker_1
+C:\proyecto> worker.exe --id worker_1 --port 5001 --file libro.txt
+✓ Esperando conexiones en localhost:5001
+
+REM Terminal 2: worker_2
+C:\proyecto> worker.exe --id worker_2 --port 5002 --file libro.txt
+✓ Esperando conexiones en localhost:5002
+
+REM Terminal 3: worker_3
+C:\proyecto> worker.exe --id worker_3 --port 5003 --file libro.txt
+✓ Esperando conexiones en localhost:5003
+[... continúa normalmente ...]
+```
+
+```cmd
+REM Terminal 6: Coordinador
+C:\proyecto> coordinator.exe libro.txt
+Procesando: libro.txt
+Enviando tarea a worker_1 (localhost:5001)...
+Enviando tarea a worker_2 (localhost:5002)...
+Enviando tarea a worker_3 (localhost:5003)...
+[... procesando fragmentos ...]
+```
+
+**Ahora en la Terminal 3 (worker_3), simular fallo:**
+
+```cmd
+REM Terminal 3 - Primera acción: Ctrl + C una vez
+Procesando bytes 40001-60000...
+
+Procesando bytes 40001-60000...
+^C
+⏸ Recibida señal de terminación (SIGINT)
+⏸ Finalizando tareas actuales...
+
+REM Espera unos segundos...
+
+REM Ahora presionar Ctrl + C DOS VECES rápidamente
+^C^C
+🔴 TERMINACIÓN FORZADA - worker_3 APAGADO
+[proceso terminado]
+```
+
+**Lo que pasa en el Coordinador (Terminal 6):**
+
+```cmd
+[...procesando...]
+⚠ worker_3: connection timeout (intento 1/2)
+⚠ worker_3: connection timeout (intento 2/2)
+🔴 FALLO CRÍTICO: worker_3 desconectado
+🔄 REASIGNACIÓN: Redistribuyendo bytes 40001-60000...
+   → Asignando a worker_1: +15000 bytes
+   → Asignando a worker_2: +15000 bytes
+✅ Rango reasignado correctamente
+Continuando con 4 workers...
+[procesamiento sigue con los 4 workers restantes]
+```
+
+### Resumen de controles
+
+| Acción | Resultado | Cuándo usar |
+|--------|-----------|-----------|
+| **1x Ctrl + C** | Finalización ordenada, permite reintentos | Para pausar temporalmente |
+| **2x Ctrl + C** | Terminación forzada inmediata | Para simular caída / forzar reasignación |
+| **Esperar 10 seg** | Circuit Breaker vuelve a HALF_OPEN | Para permitir reintentos tras OPEN |
 
 ---
 
@@ -236,6 +407,7 @@ coordinator.exe
 - ✅ **Circuit Breaker thread-safe** — Sincronizado internamente
 - ✅ **Filtrado de palabras** — Ignora tokens de 3 caracteres o menos
 - ✅ **Reintentos automáticos** — Hasta 2 intentos por conexión fallida
+- ✅ **Reasignación dinámica de rango** — Detecta fallos y redistribuye automáticamente
 
 ---
 
@@ -251,6 +423,7 @@ coordinator.exe
 | `WSAStartup failed` | Falta flag Winsock2 | Verifica que `build.bat` incluye `-lws2_32` |
 | `Circuit Breaker activo` | 3+ fallos detectados | Espera 10 segundos y reintenta |
 | `Lectura de archivo fallida` | Ruta inválida | Verifica que el archivo existe |
+| `Reasignación no ocurre` | Presionaste Ctrl+C solo una vez | Presiona **DOS VECES rápido** para forzar cierre |
 
 ---
 
