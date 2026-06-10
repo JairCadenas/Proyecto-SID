@@ -39,46 +39,40 @@ void signalHandler(int signum) {
 // ==========================================================================================
 // FUNCIÓN DE CONTEO OPTIMIZADA CON STREAMING BINARIO SEGURO
 // ==========================================================================================
-map<string, int> processTextRange(long start, long end) {
+// Cambiar los parámetros de entrada a 64 bits sin signo
+map<string, int> processTextRange(unsigned long long start, unsigned long long end) {
     map<string, int> mapaFrecuencias;
     
-    // Control de seguridad: rangos inválidos o ruta vacía
     if (LOCAL_FILE_PATH.empty() || start >= end) {
         return mapaFrecuencias;
     }
 
-    // Abrimos el archivo local directamente en modo binario para posicionamiento exacto
     ifstream file(LOCAL_FILE_PATH, ios::binary);
     if (!file.is_open()) {
         cerr << " [" << WORKER_ID << "] Error: No se pudo abrir el archivo en la ruta: " << LOCAL_FILE_PATH << "\n";
         return mapaFrecuencias;
     }
 
-    // Mover el cabezal del disco exactamente al byte de inicio que ordenó el Coordinador
     file.seekg(start);
     
-    long bytesPorProcesar = end - start;
-    const size_t TAMANO_CHUNK = 1024 * 1024; // Bloques de 1 MB en RAM a la vez
+    // Cambiar la matemática interna a unsigned long long
+    unsigned long long bytesPorProcesar = end - start;
+    const size_t TAMANO_CHUNK = 1024 * 1024; 
     vector<char> bufferChunk(TAMANO_CHUNK);
     string residuoAnterior = "";
 
-    // Leemos el segmento asignado por pedazos controlando que el stream esté sano
     while (bytesPorProcesar > 0 && file.good()) {
-        size_t bytesALeer = min((long)TAMANO_CHUNK, bytesPorProcesar);
+        // Asegurar que min use el tipo de dato correcto
+        size_t bytesALeer = min((unsigned long long)TAMANO_CHUNK, bytesPorProcesar);
         
-        // CORRECCIÓN PROTECTORA: Limpiamos por completo el buffer antes de rellenarlo
-        // Esto evita que queden caracteres residuales de iteraciones previas de 1MB.
         fill(bufferChunk.begin(), bufferChunk.end(), 0);
-
         file.read(bufferChunk.data(), bytesALeer);
         size_t bytesLeidos = file.gcount();
         if (bytesLeidos == 0) break;
 
-        // Concatenamos el residuo del bloque anterior con el nuevo bloque leído
         string fragmentoAcumulado = residuoAnterior + string(bufferChunk.data(), bytesLeidos);
         bytesPorProcesar -= bytesLeidos;
 
-        // Limpieza de caracteres extraños y conversión a minúsculas
         for (char& c : fragmentoAcumulado) {
             if (!isalnum(static_cast<unsigned char>(c))) {
                 c = ' ';
@@ -87,21 +81,17 @@ map<string, int> processTextRange(long start, long end) {
             }
         }
 
-        // Procesamiento del bloque de texto mediante stringstream
         stringstream ss(fragmentoAcumulado);
         string palabra;
         string ultimaPalabraIncompleta = "";
 
         while (ss >> palabra) {
             ultimaPalabraIncompleta = palabra;
-            // Filtro básico de longitud de palabra
             if (palabra.size() > 3) {
                 mapaFrecuencias[palabra]++; 
             }
         }
 
-        // Manejo de fronteras: si el bloque corta una palabra a la mitad,
-        // revertimos su conteo y la dejamos acumulada para el siguiente bloque.
         if (!fragmentoAcumulado.empty() && fragmentoAcumulado.back() != ' ') {
             if (!ultimaPalabraIncompleta.empty() && mapaFrecuencias[ultimaPalabraIncompleta] > 0) {
                 mapaFrecuencias[ultimaPalabraIncompleta]--; 
@@ -115,8 +105,6 @@ map<string, int> processTextRange(long start, long end) {
         }
     }
 
-    // Si al terminar el rango asignado nos quedó un residuo huérfano sin procesar, 
-    // lo contamos directamente para no perder caracteres en los límites divisores del Coordinador.
     if (!residuoAnterior.empty() && residuoAnterior.size() > 3) {
         mapaFrecuencias[residuoAnterior]++;
     }
@@ -129,12 +117,13 @@ map<string, int> processTextRange(long start, long end) {
 string handleNetworkRequest(const string& rawBody, int& statusCode) {
     if (!g_cb.allowRequest()) {
         statusCode = 503; 
-        return "{\"error\":\"Circuit Breaker ABIERTO. Nodo temporalmente fuera de servicio\"}";
+        return "{\"error\":\"Circuit Breaker ABIERTO\"}";
     }
     try {
         json tareaJson = json::parse(rawBody);
-        long start = tareaJson["start"].get<long>();
-        long end = tareaJson["end"].get<long>();
+        // Extraer los rangos como unsigned long long para evitar desbordamientos
+        unsigned long long start = tareaJson["start"].get<unsigned long long>();
+        unsigned long long end = tareaJson["end"].get<unsigned long long>();
         cout << "[" << WORKER_ID << "] Procesando rango de bytes: [" << start << " - " << end << "]\n";
         
         auto startClock = chrono::steady_clock::now();
@@ -152,8 +141,8 @@ string handleNetworkRequest(const string& rawBody, int& statusCode) {
     } catch (const exception& e) {
         g_cb.recordFailure();   
         statusCode = 500;
-        cerr << " [" << WORKER_ID << "] Error interno procesando tarea: " << e.what() << "\n";
-        return "{\"error\":\"Fallo interno en el Worker\"}";
+        cerr << " [" << WORKER_ID << "] Error interno: " << e.what() << "\n";
+        return "{\"error\":\"Fallo interno\"}";
     }
 }
 
