@@ -6,7 +6,6 @@
 ## 📋 Tabla de contenidos
 
 - [Descripción del proyecto](#descripción-del-proyecto)
-- [Archivos del proyecto](#archivos-del-proyecto)
 - [Requisitos](#requisitos)
 - [Instalación](#instalación)
 - [Compilación](#compilación)
@@ -18,123 +17,108 @@
 
 ## 📖 Descripción del proyecto
 
-**Contador Distribuido de Frecuencia de Palabras** es una aplicación cliente-servidor en C++ que procesa textos de gran tamaño de manera distribuida. Utiliza dos patrones de diseño clave:
+**Contador Distribuido de Frecuencia de Palabras** es una aplicación cliente-servidor en C++ que procesa textos de gran tamaño de manera distribuida.
 
-- **Ambassador Pattern**: Coordina las comunicaciones entre el coordinador central y múltiples workers
-- **Circuit Breaker Pattern**: Detecta y mitiga fallos en la comunicación de red
+**Características principales:**
+- 🔗 **Ambassador Pattern**: Coordina comunicaciones entre coordinador y múltiples workers
+- 🛡️ **Circuit Breaker Pattern**: Detecta y mitiga fallos en la comunicación de red
+- ⚡ **Paralelismo**: Procesa fragmentos en múltiples threads concurrentes
+- 🔐 **Thread-safe**: Sincronización con `std::mutex` en componentes críticos
 
-La aplicación divide un archivo de texto en fragmentos, los envía a workers independientes (nodos de procesamiento) a través de TCP, y agrega los resultados finales en un conteo global de palabras.
-
-**Lenguaje**: C++17  
-**Plataforma**: Windows 7/10/11  
-**Compilador**: g++ (MinGW-w64)
+**Especificaciones técnicas:**
+| Campo | Valor |
+|-------|-------|
+| Lenguaje | C++17 |
+| Plataforma | Windows 7/10/11 |
+| Compilador | g++ (MinGW-w64) |
+| Red | TCP con Winsock2 (nativa) |
 
 ---
 
-## 📁 Archivos del proyecto
+## 📁 Estructura del proyecto
 
 ```
 word_counter_cpp/
-├── circuit_breaker.hpp   // Patrón Circuit Breaker (CLOSED/OPEN/HALF_OPEN)
-├── text_extractor.hpp    // Extractor .txt
-├── emsamblador.hpp       // Patrón Ambassador (envío de tareas por red)
-├── worker.cpp            // Nodo trabajador (servidor TCP)
-├── coordinador.cpp       // Coordinador principal
-├── build.bat             // Script de compilación MinGW
+├── circuit_breaker.hpp     // Patrón Circuit Breaker (CLOSED/OPEN/HALF_OPEN)
+├── text_extractor.hpp      // Extractor de archivos .txt
+├── emsamblador.hpp         // Patrón Ambassador (envío de tareas por red)
+├── worker.cpp              // Nodo trabajador (servidor TCP)
+├── coordinador.cpp         // Coordinador principal
+├── build.bat               // Script de compilación MinGW
 └── README.md
 ```
 
-> **Todos los headers son header-only** (`.hpp`). Solo hay dos `.cpp` que se compilan.
+> **Todos los headers son header-only** (`.hpp`). Solo `worker.cpp` y `coordinador.cpp` se compilan.
 
 ---
 
 ## 1️⃣ Requisitos
 
-| Herramienta          | Versión mínima | Propósito                            |
-|----------------------|----------------|--------------------------------------|
-| Windows              | 7 / 10 / 11    | Sistema operativo objetivo           |
-| g++ / MinGW-w64      | 10+ (C++17)    | Compilador de C++                    |
-| nlohmann/json        | 3.x            | Serialización JSON (header-only)     |
+| Herramienta | Versión mínima | Propósito |
+|---|---|---|
+| Windows | 7 / 10 / 11 | Sistema operativo |
+| g++ / MinGW-w64 | 10+ (C++17) | Compilador |
+| nlohmann/json | 3.x | Serialización JSON (header-only) |
 
 ---
 
 ## 2️⃣ Instalación
 
-### Instalar MinGW-w64 (compilador g++)
+### Opción A — MSYS2 (recomendado)
 
-MinGW-w64 es el compilador de C++ para Windows. Elige una de las siguientes opciones:
+1. Descarga desde **https://www.msys2.org**
+2. Ejecuta el instalador (ruta por defecto: `C:\msys64`)
+3. Abre **MSYS2 UCRT64** y ejecuta:
+   ```bash
+   pacman -S mingw-w64-ucrt-x86_64-gcc
+   ```
+4. Cierra la terminal. `g++` estará en `C:\msys64\ucrt64\bin`
 
-#### Opción A — MSYS2 (recomendado)
+### Opción B — WinLibs (sin MSYS2)
 
-1. Descarga el instalador desde **https://www.msys2.org** (`msys2-x86_64-*.exe`)
-2. Ejecuta el instalador y deja la ruta por defecto (`C:\msys64`)
-3. Al terminar, abre la terminal **MSYS2 UCRT64** y ejecuta:
-
-```bash
-pacman -S mingw-w64-ucrt-x86_64-gcc
-```
-
-4. Cierra la terminal. Ya tienes `g++` instalado en `C:\msys64\ucrt64\bin`
-
-#### Opción B — WinLibs (instalación directa sin MSYS2)
-
-1. Descarga el paquete desde **https://winlibs.com** (GCC 13 + MinGW-w64 para Windows 64-bit, `.zip`)
-2. Extrae el ZIP en una ruta sin espacios, por ejemplo `C:\mingw64`
-3. El ejecutable está en `C:\mingw64\bin\g++.exe`
+1. Descarga desde **https://winlibs.com** (GCC 13 + MinGW-w64, `.zip`)
+2. Extrae en ruta sin espacios: `C:\mingw64`
+3. Ejecutable: `C:\mingw64\bin\g++.exe`
 
 ### Agregar MinGW al PATH de Windows
 
-Para que el comando `g++` funcione desde cualquier terminal:
+1. Presiona `Win + S` → Busca "Variables de entorno"
+2. Haz clic en "Editar las variables de entorno del sistema"
+3. Selecciona "Variables de entorno..."
+4. En "Variables del sistema", busca `Path` → Editar
+5. Haz clic en "Nuevo" y agrega tu ruta:
 
-1. Presiona `Win + S` y busca **"Variables de entorno"**
-2. Haz clic en **"Editar las variables de entorno del sistema"**
-3. Haz clic en **"Variables de entorno..."** (abajo a la derecha)
-4. En la sección **"Variables del sistema"**, busca **`Path`** y selecciónala
-5. Haz clic en **"Editar..."** y luego en **"Nuevo"**
-6. Agrega la ruta correspondiente a tu instalación:
+| Instalación | Ruta |
+|---|---|
+| MSYS2 | `C:\msys64\ucrt64\bin` |
+| WinLibs | `C:\mingw64\bin` |
 
-| Instalación          | Ruta a agregar               |
-|----------------------|------------------------------|
-| MSYS2 (opción A)     | `C:\msys64\ucrt64\bin`       |
-| WinLibs (opción B)   | `C:\mingw64\bin`             |
+6. Haz clic en "Aceptar" en todas las ventanas
+7. **Abre un CMD nuevo** para verificar los cambios
 
-7. Haz clic en **"Aceptar"** en todas las ventanas
-8. **Cierra y vuelve a abrir CMD** para que los cambios tomen efecto
-
-#### Verificar la instalación
-
-Abre una nueva ventana de CMD y ejecuta:
+### Verificar la instalación
 
 ```cmd
 g++ --version
 ```
 
-Deberías ver algo como:
-
+Deberías ver:
 ```
 g++ (Rev1, Built by MSYS2 project) 13.2.0
 ```
 
-Si ves `'g++' no se reconoce`, verifica que la ruta es correcta y que abriste un CMD nuevo.
-
 ### Descargar nlohmann/json
 
-El proyecto usa `nlohmann/json.hpp` para serializar JSON. Es una librería de un solo archivo:
+1. Ve a **https://github.com/nlohmann/json/releases**
+2. Descarga **`json.hpp`** (Single Header)
+3. Crea la estructura en tu carpeta del proyecto:
+   ```
+   word_counter_cpp/
+   └── nlohmann/
+       └── json.hpp
+   ```
 
-1. Ve a **https://github.com/nlohmann/json/releases** y descarga la versión más reciente
-2. En los *Assets* busca **`json.hpp`** bajo *Single Header* (o descarga el ZIP)
-3. Dentro de la carpeta del proyecto, crea esta estructura:
-
-```
-word_counter_cpp/
-└── nlohmann/
-    └── json.hpp       ← pega el archivo aquí
-```
-
-4. Ahora `#include "nlohmann/json.hpp"` lo encontrará automáticamente
-
-**Alternativa rápida con PowerShell** (desde la carpeta del proyecto):
-
+**Alternativa con PowerShell** (desde la carpeta del proyecto):
 ```powershell
 mkdir nlohmann
 Invoke-WebRequest -Uri "https://raw.githubusercontent.com/nlohmann/json/develop/single_include/nlohmann/json.hpp" -OutFile "nlohmann\json.hpp"
@@ -144,63 +128,54 @@ Invoke-WebRequest -Uri "https://raw.githubusercontent.com/nlohmann/json/develop/
 
 ## 3️⃣ Compilación
 
-Con MinGW en el PATH y `nlohmann/json.hpp` en su lugar, ejecuta desde CMD en la carpeta del proyecto:
+Con MinGW en el PATH y `nlohmann/json.hpp` en su lugar, ejecuta desde CMD:
 
 ```cmd
 build.bat
 ```
 
-Esto genera **`worker.exe`** y **`coordinator.exe`** en la misma carpeta.
+Genera: **`worker.exe`** y **`coordinator.exe`**
 
-> Si ves `fatal error: nlohmann/json.hpp: No such file or directory`, verifica que creaste `nlohmann\` con el archivo dentro.
+> Si ves `fatal error: nlohmann/json.hpp: No such file or directory`, verifica que creaste `nlohmann\` correctamente.
 
 ---
 
 ## 4️⃣ Uso
 
-### Archivos soportados
+### Paso 1 — Iniciar los Workers (5 terminales separadas)
 
-| Formato | Soporte      | Notas                                              |
-|---------|--------------|----------------------------------------------------|
-| `.txt`  | ✅ Completo  | Lectura directa, sin dependencias adicionales      |
-| `.pdf`  | ❌ No        | `text_extractor.hpp` solo procesa `.txt` actualmente |
-
-### Ejecución
-
-#### Paso 1 — Iniciar los Workers (5 terminales separadas)
-
-Cada Worker necesita su ID único, un puerto TCP y el archivo de texto a procesar:
+Cada Worker necesita: ID único, puerto TCP y archivo de texto
 
 ```cmd
 REM Terminal 1
-worker.exe --id worker_1 --port 5001 --file Alice_in_Wonderland.txt
+worker.exe --id worker_1 --port 5001 --file libro.txt
 
 REM Terminal 2
-worker.exe --id worker_2 --port 5002 --file Alice_in_Wonderland.txt
+worker.exe --id worker_2 --port 5002 --file libro.txt
 
 REM Terminal 3
-worker.exe --id worker_3 --port 5003 --file Alice_in_Wonderland.txt
+worker.exe --id worker_3 --port 5003 --file libro.txt
 
 REM Terminal 4
-worker.exe --id worker_4 --port 5004 --file Alice_in_Wonderland.txt
+worker.exe --id worker_4 --port 5004 --file libro.txt
 
 REM Terminal 5
-worker.exe --id worker_5 --port 5005 --file Alice_in_Wonderland.txt
+worker.exe --id worker_5 --port 5005 --file libro.txt
 ```
 
-> El archivo indicado con `--file` debe estar en la misma carpeta o escribe la ruta completa (ej. `C:\textos\Alice_in_Wonderland.txt`)
+> El archivo debe estar en la misma carpeta o usa la ruta completa: `C:\textos\libro.txt`
 
-#### Paso 2 — Ejecutar el Coordinador (6ª terminal)
+### Paso 2 — Ejecutar el Coordinador (6ª terminal)
 
 ```cmd
-coordinator.exe Alice_in_Wonderland.txt
+coordinator.exe libro.txt
 ```
 
 El Coordinador:
 - Divide el archivo en 5 fragmentos
-- Envía cada fragmento a un Worker diferente
+- Envía cada uno a un Worker diferente
 - Agrega los resultados en un conteo global
-- Muestra el top de palabras más frecuentes
+- Muestra las palabras más frecuentes
 
 ---
 
@@ -211,11 +186,11 @@ El Coordinador:
 │ coordinator.exe  │────▶│ emsamblador.hpp  │────▶│circuit_breaker.hpp │
 │(coordinador.cpp) │     │  (Ambassador)    │     │  (por worker)      │
 └──────────────────┘     └──────────────────┘     └────────────────────┘
-       │                                                      ▼
-       │                                            ┌─────────────────┐
-       │                                            │  worker.exe (x5)│
-       │                                            └─────────────────┘
-       │                                                      ▲
+       │                                                       ▼
+       │                                             ┌─────────────────┐
+       │                                             │  worker.exe (x5)│
+       │                                             └─────────────────┘
+       │                                                       ▲
        └──────────── JSON sobre TCP (Winsock2) ────────────┘
 ```
 
@@ -224,14 +199,14 @@ El Coordinador:
 ```
 coordinator.exe
   │
-  ├─ Lee el archivo .txt completo en memoria
+  ├─ Lee archivo .txt en memoria
   ├─ Divide en N fragmentos por bytes
   ├─ Lanza N std::async → Emsamblador::dispatch()
   │
   Emsamblador::dispatch()
     ├─ CircuitBreaker::allowRequest() → ¿abierto?
     ├─ TCP socket → JSON { "start": X, "end": Y } → worker.exe
-    ├─ Timeout / reintento si falla (hasta 2 intentos)
+    ├─ Reintentos si falla (hasta 2 intentos)
     └─ CircuitBreaker::recordSuccess() / recordFailure()
   │
   └─ Combina mapas de frecuencia → muestra resultados
@@ -240,72 +215,75 @@ coordinator.exe
 ### Estados del Circuit Breaker
 
 ```
-    CLOSED ──(3 fallos)──▶ OPEN ──(10 seg)──▶ HALF_OPEN
-      ▲                                              │
-      └──────────────── éxito ──────────────────────┘
-                               fallo → OPEN
+  CLOSED ──(3 fallos)──▶ OPEN ──(10 seg)──▶ HALF_OPEN
+    ▲                                            │
+    └──────────────── éxito ──────────────────┘
+                              fallo → OPEN
 ```
 
-**Estados**:
-- **CLOSED**: Sistema funcionando normalmente, todas las solicitudes se procesan
-- **OPEN**: Se han detectado 3 fallos consecutivos, todas las solicitudes se rechazan inmediatamente
-- **HALF_OPEN**: Después de 10 segundos en estado OPEN, se permite 1 solicitud de prueba
+**Significado de estados:**
+- **CLOSED**: Sistema normal, procesa todas las solicitudes
+- **OPEN**: Se detectaron 3 fallos, rechaza solicitudes inmediatamente
+- **HALF_OPEN**: Después de 10 segundos, permite 1 solicitud de prueba
 
 ---
 
-## 6️⃣ Características técnicas
+## 🔧 Características técnicas
 
-- ✅ **Sin dependencias externas de red.** Solo Winsock2 (nativa de Windows)
-- ✅ **Comunicación TCP cruda.** No es HTTP; envío directo de JSON por socket
-- ✅ **Paralelismo con `std::async`.** Cada fragmento se despacha en su propio hilo del SO
-- ✅ **Circuit Breaker thread-safe.** Protegido internamente con `std::mutex`
-- ✅ **Filtrado de palabras.** Se ignoran tokens de 3 caracteres o menos (artículos, preposiciones)
-- ✅ **Reintentos automáticos.** Hasta 2 intentos si falla la conexión a un Worker
+- ✅ **Sin dependencias externas de red** — Solo Winsock2 (nativa de Windows)
+- ✅ **Comunicación TCP cruda** — JSON puro sobre socket (sin HTTP)
+- ✅ **Paralelismo con `std::async`** — Cada fragmento en su propio hilo
+- ✅ **Circuit Breaker thread-safe** — Sincronizado internamente
+- ✅ **Filtrado de palabras** — Ignora tokens de 3 caracteres o menos
+- ✅ **Reintentos automáticos** — Hasta 2 intentos por conexión fallida
 
 ---
 
-## 7️⃣ Solución de problemas
+## 🐛 Solución de problemas
 
-| Error | Causa probable | Solución |
-|-------|----------------|----------|
-| `'g++' no se reconoce como comando` | MinGW no está en el PATH | Repite el paso de configuración del PATH y abre un CMD nuevo |
-| `fatal error: nlohmann/json.hpp: No such file or directory` | Falta la librería JSON | Verifica que creaste `nlohmann\` con `json.hpp` dentro |
-| `Error critico: Debe indicar el archivo local usando --file` | Worker iniciado sin `--file` | Agrega `--file NombreArchivo.txt` al comando del Worker |
-| `bind() failed (puerto ocupado)` | El Worker ya corre en ese puerto | Cierra con `taskkill /f /im worker.exe` o usa otro puerto |
-| `connect() failed` | El Worker no está corriendo | Inicia primero todos los `worker.exe`, luego el coordinador |
-| `WSAStartup failed` | Falta el flag de enlace Winsock2 | Verifica que `build.bat` incluye `-lws2_32` |
-| `El [worker_N] no pudo completar su tarea` | Circuit Breaker activo o Worker caído | Espera 10 segundos (cooldown) y vuelve a ejecutar el coordinador |
-| `Lectura de archivo fallida` | Ruta incorrecta o archivo no existe | Verifica que el archivo existe en la ruta indicada |
+| Error | Causa | Solución |
+|---|---|---|
+| `'g++' no se reconoce` | MinGW no en PATH | Repite config. del PATH y abre CMD nuevo |
+| `nlohmann/json.hpp: No such file` | Falta librería JSON | Verifica que creaste `nlohmann\json.hpp` |
+| `Error: --file requerido` | Worker sin parámetro `--file` | Agrega `--file archivo.txt` al comando |
+| `bind() failed (puerto ocupado)` | Worker ya corriendo en ese puerto | Cierra con `taskkill /f /im worker.exe` |
+| `connect() failed` | Worker no iniciado | Inicia todos los workers antes del coordinador |
+| `WSAStartup failed` | Falta flag Winsock2 | Verifica que `build.bat` incluye `-lws2_32` |
+| `Circuit Breaker activo` | 3+ fallos detectados | Espera 10 segundos y reintenta |
+| `Lectura de archivo fallida` | Ruta inválida | Verifica que el archivo existe |
 
 ---
 
 ## 📝 Ejemplo completo
 
-Supongamos que tienes `book.txt` en `C:\proyectos\word_counter_cpp\`:
+Supongamos `libro.txt` en `C:\proyectos\word_counter_cpp\`:
 
-**Terminal 1-5** (Workers):
+**Terminales 1-5** (Workers):
 ```cmd
 cd C:\proyectos\word_counter_cpp
-worker.exe --id worker_1 --port 5001 --file book.txt
-worker.exe --id worker_2 --port 5002 --file book.txt
-... (y así sucesivamente)
+worker.exe --id worker_1 --port 5001 --file libro.txt
+worker.exe --id worker_2 --port 5002 --file libro.txt
+worker.exe --id worker_3 --port 5003 --file libro.txt
+worker.exe --id worker_4 --port 5004 --file libro.txt
+worker.exe --id worker_5 --port 5005 --file libro.txt
 ```
 
 **Terminal 6** (Coordinador):
 ```cmd
 cd C:\proyectos\word_counter_cpp
-coordinator.exe book.txt
+coordinator.exe libro.txt
 ```
 
-**Salida esperada**:
+**Salida esperada:**
 ```
-Procesando: book.txt
+Procesando: libro.txt
 Enviando tarea a worker_1 (localhost:5001)...
 Enviando tarea a worker_2 (localhost:5002)...
 ...
 Top 10 palabras más frecuentes:
 1. the - 1542
 2. and - 1203
+3. to - 987
 ...
 ```
 
@@ -313,7 +291,7 @@ Top 10 palabras más frecuentes:
 
 ## 📄 Licencia
 
-Este proyecto es para propósitos educativos.
+Proyecto para propósitos educativos.
 
 ---
 
@@ -321,4 +299,4 @@ Este proyecto es para propósitos educativos.
 
 **Jair Cadenas**, **Tania Chávez**, **Mochi-Pichy** y **arieleru**
 
-Diseño e implementación del patrón Ambassador y Circuit Breaker para procesamiento distribuido de texto.
+Diseño e implementación de patrones Ambassador y Circuit Breaker para procesamiento distribuido de texto.
