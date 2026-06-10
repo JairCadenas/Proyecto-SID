@@ -319,6 +319,6 @@ Este proyecto es para propósitos educativos.
 
 ## 👤 Autor
 
-**Jair Cadenas**,**Tania Chávez**,**Mochi-Pichy**y**arieleru**
+**Jair Cadenas**, **Tania Chávez**, **Mochi-Pichy** y **arieleru**
 
 Diseño e implementación del patrón Ambassador y Circuit Breaker para procesamiento distribuido de texto.

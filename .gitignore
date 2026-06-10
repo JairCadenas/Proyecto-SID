@@ -24,3 +24,6 @@ wiki_concatenated*
 worker_comentarios.cpp
 coordinator_comentarios.cpp
 *Diagramas
+*.pdf
+*.png
+Informe.pdf
